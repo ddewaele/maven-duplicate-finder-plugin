@@ -36,6 +36,7 @@ import java.util.zip.ZipFile;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang.StringUtils;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.DependencyResolutionRequiredException;
 import org.apache.maven.artifact.versioning.InvalidVersionSpecificationException;
@@ -161,6 +162,19 @@ public class DuplicateFinderMojo extends AbstractMojo
      */    
     private String outputFileName;
     
+    /**
+     * This property can be used if we want to check
+     * duplicate classes in a particular group only.
+     * 
+     * @parameter property="groupToBeEvaluated"
+     */    
+    private String groupToBeEvaluated;
+    
+    /**
+     * Whether the mojo should compare size of files if a conflict was found in SHA 256 Hash. 
+     * @parameter default-value="true"
+     */
+    private boolean compareSize;
 
     /**
      * Skip the plugin execution.
@@ -265,7 +279,8 @@ public class DuplicateFinderMojo extends AbstractMojo
     private void checkClasspath(List classpathElements, Map artifactsByFile) throws MojoExecutionException
     {
         ClasspathDescriptor classpathDesc = createClasspathDescriptor(classpathElements);
-
+        LOG.debug("test loggers: List classpathElements >> " + classpathElements + " << classpathelements " );
+        LOG.debug("test loggers: Map artifactsbyfile >> " + artifactsByFile + " << artifactsbyfile " ); 
         int foundDuplicateClassesConflict   = checkForDuplicateClasses(classpathDesc, artifactsByFile);
         int foundDuplicateResourcesConflict = checkForDuplicateResources(classpathDesc, artifactsByFile);
         int maxConflict = Math.max(foundDuplicateClassesConflict, foundDuplicateResourcesConflict);
@@ -286,10 +301,20 @@ public class DuplicateFinderMojo extends AbstractMojo
             String    className = (String)classNameIt.next();
             Set       elements  = classpathDesc.getElementsHavingClass(className);
 
+                  
             if (elements.size() > 1) {
                 Set artifacts = getArtifactsForElements(elements, artifactsByFile);
-
+                
+                LOG.debug("test loggers: Set artifacts >> " + artifacts + " << set artifacts " ); 
+                
                 filterIgnoredDependencies(artifacts);
+                
+                LOG.debug("test loggers: Set artifacts after ignorning>> " + artifacts + " << set artifacts post ignore" );
+                
+                filterExternalGroupArtifacts(artifacts);
+                
+                LOG.debug("test loggers: Set artifacts after removing external groups >> " + artifacts + " << set artifacts post external remove" );
+                
                 if ((artifacts.size() < 2) || isExceptedClass(className, artifacts)) {
                     continue;
                 }
@@ -350,7 +375,14 @@ public class DuplicateFinderMojo extends AbstractMojo
             if (elements.size() > 1) {
                 Set artifacts = getArtifactsForElements(elements, artifactsByFile);
 
+                LOG.debug("test loggers: Set artifacts >> " + artifacts + " << set artifacts " ); 
+                
                 filterIgnoredDependencies(artifacts);
+                
+                filterExternalGroupArtifacts(artifacts);
+                
+                LOG.debug("test loggers: Set artifacts after removing external groups >> " + artifacts + " << set artifacts post external remove" );
+                
                 if ((artifacts.size() < 2) || isExceptedResource(resource, artifacts)) {
                     continue;
                 }
@@ -400,7 +432,7 @@ public class DuplicateFinderMojo extends AbstractMojo
     }
 
     /**
-     * Detects class/resource differences via SHA256 hash comparsion.
+     * Detects class/resource differences via SHA256 hash comparison.
      * 
      * @param resourcePath the class or resource path that has duplicates in classpath
      * @param elements the files contains the duplicates
@@ -410,22 +442,44 @@ public class DuplicateFinderMojo extends AbstractMojo
     {
         File firstFile = null;
         String firstSHA256 = null;
+        long firstSize=0;
+        long newSize=0;
 
         for (Iterator it = elements.iterator(); it.hasNext();)
         {
             File file = (File)it.next();
             try {
                 String newSHA256 = getSHA256HexOfElement(file, resourcePath);
-
+                
+                if(this.compareSize){
+                newSize = getSizeOfFile(file, resourcePath);
+                
+                	if(firstSize == 0){
+                		//save size of first element
+                		firstSize = newSize;
+                	}
+                }
+                
                 if (firstSHA256 == null) {
                     // save sha256 hash from the first element
                     firstSHA256 = newSHA256;
                     firstFile = file;
-                }
+                   }
+        
+             
                 else if (!newSHA256.equals(firstSHA256)) {
-                    LOG.debug("Found different SHA256 hashs for elements " + resourcePath + " in file " + firstFile + " and " + file);
-                    return false;
-                }
+                	                   
+                   if ((!this.compareSize) || (newSize != firstSize)){
+                   	LOG.warn("Found different SHA256 hashs for elements " + resourcePath + " in file " + firstFile + " and " + file); 
+                    return false; 
+                   }
+                   
+                   else 
+                    {
+                	   LOG.debug("Found different SHA256 hashs for elements " + resourcePath + " in file " + firstFile + " and " + file + " but ignoring since size is same");
+                    }
+                   
+                 }
             }
             catch (IOException ex) {
                 LOG.warn("Could not read content from file " + file + "!", ex);
@@ -469,9 +523,25 @@ public class DuplicateFinderMojo extends AbstractMojo
         }
     }
 
+    private long getSizeOfFile(final File file, final String resourcePath) throws IOException
+    {
+      
+            ZipFile zip = new ZipFile(file);
+            ZipEntry zipEntry = zip.getEntry(resourcePath);
+                       
+            if (zipEntry == null) {
+                throw new IOException("Could not find " + resourcePath + " in archive " + file);
+            }
+            LOG.debug("test loggers: Calculating size for class:" + resourcePath + " in artifact "  + file + " :Size = " + zipEntry.getSize()); 
+            return zipEntry.getSize();
+            
+    }
+
+    
     private void filterIgnoredDependencies(final Set artifacts)
     {
         if (ignoredDependencies != null) {
+        	LOG.debug("test loggers: Ignored dep >> " + ignoredDependencies[0].toString() + " << ignored deps" );
             for (int idx = 0; idx < ignoredDependencies.length; idx++) {
                 for (Iterator artifactIt = artifacts.iterator(); artifactIt.hasNext();) {
                     Artifact artifact = (Artifact)artifactIt.next();
@@ -481,6 +551,23 @@ public class DuplicateFinderMojo extends AbstractMojo
                     }
                 }
             }
+        }
+    }
+    
+    private void filterExternalGroupArtifacts(final Set artifacts)
+    {
+        if (this.groupToBeEvaluated !=null && !"".equals(this.groupToBeEvaluated)) {
+        	LOG.debug("test loggers: group to be evaluated >> " + this.groupToBeEvaluated + " << group to be evaluated" );
+               for (Iterator artifactIt = artifacts.iterator(); artifactIt.hasNext();) {
+                    Artifact artifact = (Artifact)artifactIt.next();
+                    LOG.debug("test loggers: artifact group >> " + artifact.getGroupId() + " << artifact group" );
+                    
+                    if (!StringUtils.equals(this.groupToBeEvaluated, artifact.getGroupId())) {
+                    	LOG.debug("test loggers: artifact" + artifact.getGroupId() + ":" + artifact.getArtifactId()  + ":" + artifact.getVersion() + " will be removed as group is not = " +this.groupToBeEvaluated );
+                    	artifactIt.remove();
+                    }
+                }
+            
         }
     }
 
